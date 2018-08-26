@@ -15,23 +15,27 @@ import (
 	"strings"
 	"time"
 
+	// FIXME change back to ponzu-cms
+	"github.com/nanohard/ponzu/system/tls"
 	_ "github.com/ponzu-cms/ponzu/content"
 	"github.com/ponzu-cms/ponzu/system/admin"
 	"github.com/ponzu-cms/ponzu/system/api"
 	"github.com/ponzu-cms/ponzu/system/api/analytics"
 	"github.com/ponzu-cms/ponzu/system/db"
-	"github.com/ponzu-cms/ponzu/system/tls"
 
 	"github.com/spf13/cobra"
 )
 
 var (
 	bind      string
+	cert      string
+	key       string
 	httpsport int
 	port      int
 	docsport  int
 	https     bool
 	devhttps  bool
+	autocert  bool
 	docs      bool
 	cli       bool
 
@@ -75,10 +79,17 @@ $ ponzu run admin
 $ ponzu run --port=8888 api`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var addTLS string
+
 		if https {
 			addTLS = "--https"
 		} else {
 			addTLS = "--https=false"
+		}
+
+		if autocert {
+			addTLS = "--autocert"
+		} else {
+			addTLS = "--autocert=false"
 		}
 
 		if devhttps {
@@ -107,6 +118,8 @@ $ ponzu run --port=8888 api`,
 			fmt.Sprintf("--bind=%s", bind),
 			fmt.Sprintf("--port=%d", port),
 			fmt.Sprintf("--https-port=%d", httpsport),
+			fmt.Sprintf("--cert=%s", cert),
+			fmt.Sprintf("--key=%s", key),
 			fmt.Sprintf("--docs-port=%d", docsport),
 			addDocs,
 			addTLS,
@@ -159,9 +172,18 @@ var serveCmd = &cobra.Command{
 		// init search index
 		go db.InitSearchIndex()
 
-		// save the https port the system is listening on
-		err := db.PutConfig("https_port", fmt.Sprintf("%d", httpsport))
-		if err != nil {
+		// Save the https port the system is listening on.
+		if err := db.PutConfig("https_port", fmt.Sprintf("%d", httpsport)); err != nil {
+			log.Fatalln("System failed to save config. Please try to run again.", err)
+		}
+
+		// Save the https certificate the system is using.
+		if err := db.PutConfig("cert", fmt.Sprintf("%s", cert)); err != nil {
+			log.Fatalln("System failed to save config. Please try to run again.", err)
+		}
+
+		// Save the https private key the system is using.
+		if err := db.PutConfig("key", fmt.Sprintf("%s", key)); err != nil {
 			log.Fatalln("System failed to save config. Please try to run again.", err)
 		}
 
@@ -175,17 +197,24 @@ var serveCmd = &cobra.Command{
 			fmt.Println("If your browser rejects HTTPS requests, try allowing insecure connections on localhost.")
 			fmt.Println("on Chrome, visit chrome://flags/#allow-insecure-localhost")
 
+			// Enable AutoCert with HTTPS and its HTTP server to get the TLS certificate using acme client.
+		} else if autocert {
+			fmt.Println("Enabling HTTPS with LetsEncrypt AutoCert...")
+
+			go tls.EnableAutoCert()
+			fmt.Printf("Server using AutoCert listening on :%s for HTTPS requests...\n", db.ConfigCache("https_port").(string))
+
+			// Only enable HTTPS
 		} else if https {
 			fmt.Println("Enabling HTTPS...")
 
-			go tls.Enable()
+			go tls.EnableHTTPS(cert, key)
 			fmt.Printf("Server listening on :%s for HTTPS requests...\n", db.ConfigCache("https_port").(string))
 		}
 
 		// save the https port the system is listening on so internal system can make
 		// HTTP api calls while in dev or production w/o adding more cli flags
-		err = db.PutConfig("http_port", fmt.Sprintf("%d", port))
-		if err != nil {
+		if err := db.PutConfig("http_port", fmt.Sprintf("%d", port)); err != nil {
 			log.Fatalln("System failed to save config. Please try to run again.", err)
 		}
 
@@ -194,8 +223,7 @@ var serveCmd = &cobra.Command{
 		if bind == "" {
 			bind = "localhost"
 		}
-		err = db.PutConfig("bind_addr", bind)
-		if err != nil {
+		if err := db.PutConfig("bind_addr", bind); err != nil {
 			log.Fatalln("System failed to save config. Please try to run again.", err)
 		}
 
@@ -209,11 +237,14 @@ var serveCmd = &cobra.Command{
 func init() {
 	for _, cmd := range []*cobra.Command{runCmd, serveCmd} {
 		cmd.Flags().StringVar(&bind, "bind", "localhost", "address for ponzu to bind the HTTP(S) server")
+		cmd.Flags().StringVar(&cert, "cert", "", "https certificate to use")
+		cmd.Flags().StringVar(&key, "key", "", "https private key to use")
 		cmd.Flags().IntVar(&httpsport, "https-port", 443, "port for ponzu to bind its HTTPS listener")
 		cmd.Flags().IntVar(&port, "port", 8080, "port for ponzu to bind its HTTP listener")
 		cmd.Flags().IntVar(&docsport, "docs-port", 1234, "[dev environment] override the documentation server port")
 		cmd.Flags().BoolVar(&docs, "docs", false, "[dev environment] run HTTP server to view local HTML documentation")
-		cmd.Flags().BoolVar(&https, "https", false, "enable automatic TLS/SSL certificate management")
+		cmd.Flags().BoolVar(&https, "https", false, "enable TLS/SSL manually")
+		cmd.Flags().BoolVar(&autocert, "autocert", false, "enable automatic TLS/SSL via LetsEncrypt certbot")
 		cmd.Flags().BoolVar(&devhttps, "dev-https", false, "[dev environment] enable automatic TLS/SSL certificate management")
 	}
 

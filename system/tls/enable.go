@@ -65,9 +65,9 @@ func newManager() autocert.Manager {
 	}
 }
 
-// Enable runs the setup for creating or locating production certificates and
-// starts the TLS server
-func Enable() {
+// EnableAutoCert runs the setup for creating or locating production certificates
+// using LetsEncrypt and starts the TLS server.
+func EnableAutoCert() {
 	m := newManager()
 
 	server := &http.Server{
@@ -79,4 +79,42 @@ func Enable() {
 	go http.ListenAndServe(":http", m.HTTPHandler(nil))
 
 	log.Fatalln(server.ListenAndServeTLS("", ""))
+}
+
+// EnableHTTPS uses the directory: pwd + "/system/tls/certs"
+// and starts the TLS server. If that directory doesn't exist it is created.
+func EnableHTTPS(cert string, key string) {
+	// Create and/or set the directory for TLS certificate and key.
+	pwd, err := os.Getwd()
+	if err != nil {
+		log.Fatalln("Couldn't find working directory to locate or save certificates.")
+	}
+
+	cache := filepath.Join(pwd, "system", "tls", "certs")
+	if _, err := os.Stat(cache); os.IsNotExist(err) {
+		err := os.MkdirAll(cache, os.ModePerm|os.ModeDir)
+		if err != nil {
+			log.Fatalln("Couldn't create cert directory at ", cache)
+		}
+		// FIXME dubug code
+		log.Fatalln("TLS dir: ", cache)
+	}
+
+	server := &http.Server{
+		Addr: fmt.Sprintf(":%s", db.ConfigCache("https_port").(string)),
+		// Good practice to set timeouts to avoid Slowloris attacks.
+		WriteTimeout: time.Second * 15,
+		ReadTimeout:  time.Second * 15,
+		IdleTimeout:  time.Second * 60,
+	}
+
+	// If `cert` and `key` paths are not provided by the user CLI flags
+	// then we will use the default path of system/tls/certs.
+	if cert == "" {
+		cert = filepath.Join(cache, "fullchain.pem")
+	}
+	if key == "" {
+		key = filepath.Join(cache, "privkey.pem")
+	}
+	log.Fatalln(server.ListenAndServeTLS(cert, key))
 }
